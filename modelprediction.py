@@ -16,7 +16,6 @@ full_dataset = pd.read_excel("./fulldataset.xlsx", index_col=False)
 full_dataset[["AGE", "HEIGHT", "WEIGHT"]] = full_dataset[["AGE", "HEIGHT", "WEIGHT"]].replace(
     {" years": "", " cm": "", " kg": ""}, regex=True
 ).astype(float)
-
 full_dataset[["AGE", "HEIGHT", "WEIGHT", "TIME(min)", "C-Peptide", "ISR"]] = full_dataset[["AGE", "HEIGHT", "WEIGHT", "TIME(min)", "C-Peptide", "ISR"]].astype("float64")
 full_dataset["BMI"] = full_dataset["WEIGHT"] / (full_dataset["HEIGHT"]/100)**2
 full_dataset["BSA"] = np.sqrt((full_dataset["HEIGHT"] * full_dataset["WEIGHT"]) / 3600)
@@ -24,43 +23,13 @@ full_dataset["BSA"] = np.sqrt((full_dataset["HEIGHT"] * full_dataset["WEIGHT"]) 
 
 full_dataset_cleaned = full_dataset.dropna(subset=["ISR"], how="all")
 
-model_dataset = full_dataset_cleaned.dropna(subset=["C-Peptide"], how="all").copy()
+model_dataset = full_dataset_cleaned.dropna(subset=["C-Peptide", "ISR"], how="all").copy()
+model_dataset = model_dataset.dropna(subset=["ISR"], how="all")
 model_dataset.drop(columns=["Sample ID"], inplace=True)
 model_dataset = pd.get_dummies(model_dataset, columns=["SEX", "SUBJECT"])
 model_dataset = model_dataset[model_dataset["C-Peptide"] > 0] # Remove negative value outliers gotten as a result of a mistake in data collection
 
-
-c_pep_features = ["ISR", "BMI", "WEIGHT", "BSA"]
-preprocessing = ColumnTransformer(transformers=[
-    ("scale", MinMaxScaler(), c_pep_features)
-])
-c_pep_none = full_dataset_cleaned[full_dataset_cleaned["C-Peptide"].isna()]
-y = np.log1p(model_dataset["C-Peptide"]) # This converts large C-Peptide values to log for better scalability
-X = model_dataset[c_pep_features]
-
-X_test = c_pep_none[c_pep_features]
-
-model_pipeline = Pipeline(steps=[
-    ("scale", preprocessing),
-    ("model", XGBRegressor(n_estimators=400, max_depth=10, learning_rate=0.05, subsample=1))
-])
-
-model_pipeline.fit(X, y)
-predictions = model_pipeline.predict(X_test)
-predictions = np.expm1(predictions) # converts the log predicted value back to base 10
-c_pep = pd.DataFrame(predictions)
-c_pep.rename(columns={0: "C-Peptide"}, inplace=True)
-c_pep_none = pd.get_dummies(c_pep_none, columns=["SUBJECT", "SEX"])
-replaced = c_pep_none.copy()
-replaced.drop(columns=["C-Peptide"], inplace=True)
-replaced = replaced.reset_index(drop=True)
-final_cpep = pd.concat([replaced, c_pep], axis=1)
-
-
-real_dataset = pd.concat([model_dataset, final_cpep])
-real_model_dataset = real_dataset.copy()
-real_model_dataset.drop(columns=["Sample ID"], inplace=True)
-df = real_model_dataset
+df = model_dataset
 
 def create_lag_features(df, lags=4):
     df_lag = df.copy()
@@ -72,11 +41,11 @@ df_lagged = create_lag_features(df)
 features = ["C-Peptide", "CPeptide_lag1", "CPeptide_lag2", "sample", 
             "CPeptide_lag3", "CPeptide_lag4", 'BMI', 'BSA', 'SEX_M', 
             "SEX_F", "WEIGHT", "TIME(min)", "SUBJECT_NIDDM", "SUBJECT_normal", 
-            "SUBJECT_obese", "sample"]
+            "SUBJECT_obese"]
+
+
 X_rf = df_lagged[features]
 y_rf = df_lagged["ISR"]
-X_rf
-
 
 scaling = ColumnTransformer(transformers=[
     ('scale', MinMaxScaler(), features)
@@ -84,10 +53,10 @@ scaling = ColumnTransformer(transformers=[
 
 def within_subject(selected_features):
     selected_features.remove("sample")
-    X_rf = X_rf[selected_features]
+    X_rfr = X_rf[selected_features]
 
     X_train_rf, X_test_rf, y_train_rf, y_test_rf = train_test_split(
-        X_rf, y_rf, test_size=0.2, random_state=42
+        X_rfr, y_rf, test_size=0.2, random_state=42
     )
 
     return {"X_train": X_train_rf, "X_test": X_test_rf, "y_train": y_train_rf, "y_test": y_test_rf}
@@ -96,9 +65,10 @@ def within_subject(selected_features):
 def outside_subject():
                     
     gss = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
-    train_idx, test_idx = next(gss.split(X_rf, y_rf, groups=X_rf["sample"]))
+    Xrfc = X_rf.copy()
+    train_idx, test_idx = next(gss.split(Xrfc, y_rf, groups=Xrfc["sample"]))
 
-    X_train, X_test = X_rf.iloc[train_idx], X_rf.iloc[test_idx]
+    X_train, X_test = Xrfc.iloc[train_idx], Xrfc.iloc[test_idx]
     y_train_rf, y_test_rf = y_rf.iloc[train_idx], y_rf.iloc[test_idx]
 
     X_train_rf = X_train.copy()
@@ -123,7 +93,7 @@ stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_mo
 voting_regressor = VotingRegressor(estimators=base_model)
 rf_model = Pipeline(steps=[
         ("scale", scaling),
-        ("model", stacked_model)
+        ("model", voting_regressor)
 ])
 
 within_sub = within_subject(features)
@@ -147,3 +117,5 @@ def model_results(splitting_style):
 
 
     return splitting_style["y_test"].max(), splitting_style["y_test"].min()
+
+print(model_results(within_sub))
