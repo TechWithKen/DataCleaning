@@ -81,29 +81,35 @@ def outside_subject():
 
 
 
-linear_model = LinearRegression()
-xgboost_model = XGBRegressor(n_estimators=200, max_depth=10, learning_rate=0.05, subsample=1.0, colsample_bytree=0.9, reg_alpha=0.8)
-random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.99, max_samples=0.92, random_state=42)
+def model_selection():
+    linear_model = LinearRegression()
+    xgboost_model = XGBRegressor(n_estimators=200, max_depth=10, learning_rate=0.05, subsample=1.0, colsample_bytree=0.9, reg_alpha=0.8)
+    random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.99, max_samples=0.92, random_state=42)
 
-base_model = [("xgboost", xgboost_model),('randomforest', random_forest)]
 
-meta_model = LinearRegression()
+    base_model = [("xgboost", xgboost_model),('randomforest', random_forest)]
+    meta_model = LinearRegression()
+    stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
+    voting_regressor = VotingRegressor(estimators=base_model)
 
-stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
-voting_regressor = VotingRegressor(estimators=base_model)
-rf_model = Pipeline(steps=[
-        ("scale", scaling),
-        ("model", voting_regressor)
-])
+    model_inputs = {"1": linear_model, "2": xgboost_model, "3": random_forest, "4": stacked_model, "5": voting_regressor}
 
-within_sub = within_subject(features)
-outside = outside_subject()
+    model_input = input('Please select a model [1: linear_model, 2: xgboost_model, 3: random_forest, 4: stacked_model, 5: voting_regressor]: ')
+    rf_model = Pipeline(steps=[
+            ("scale", scaling),
+            ("model", model_inputs[model_input])
+    ])
+
+    return {"selected_model": rf_model, "model_inputs": model_inputs}
+
+
 
 
 def model_results(splitting_style):
 
-    rf_model.fit(splitting_style["X_train"], splitting_style["y_train"])
-    rf_pred = rf_model.predict(splitting_style["X_test"])
+    model_selection()["selected_model"].fit(splitting_style["X_train"], splitting_style["y_train"])
+    rf_pred = model_selection()["selected_model"].predict(splitting_style["X_test"])
+
 
     print("Ensemble Voting Regressor RMSE:", np.sqrt(mean_squared_error(splitting_style["y_test"], rf_pred)))
     print(f'Ensemble Voting Regressor R2_Score: {r2_score(splitting_style["y_test"], rf_pred)}')
