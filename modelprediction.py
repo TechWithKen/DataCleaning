@@ -29,23 +29,31 @@ model_dataset.drop(columns=["Sample ID"], inplace=True)
 model_dataset = pd.get_dummies(model_dataset, columns=["SEX", "SUBJECT"])
 model_dataset = model_dataset[model_dataset["C-Peptide"] > 0] # Remove negative value outliers gotten as a result of a mistake in data collection
 
-df = model_dataset
 
-def create_lag_features(df, lags=4):
+label = model_dataset["ISR"]
+model_features = model_dataset.copy()
+model_features.drop(columns=["ISR"], inplace=True)
+
+model_train, model_test, result_train, result_test = train_test_split(model_features, label, test_size=0.2, random_state=42)
+
+
+model_features = pd.concat([model_train, result_train], axis=1)
+model_test_features = pd.concat([model_test, result_test], axis=1)
+model_features
+
+
+def create_lag_features(df, lags=3):
     df_lag = df.copy()
     for lag in range(1, lags + 1):
         df_lag[f"CPeptide_lag{lag}"] = df_lag.groupby("sample")["C-Peptide"].shift(lag)
     return df_lag.dropna()
 
-df_lagged = create_lag_features(df)
+
+df_lagged = create_lag_features(model_features)
 features = ["C-Peptide", "CPeptide_lag1", "CPeptide_lag2", "sample", 
-            "CPeptide_lag3", "CPeptide_lag4", 'BMI', 'BSA', 'SEX_M', 
+            "CPeptide_lag3", 'BMI', 'BSA', 'SEX_M', 
             "SEX_F", "WEIGHT", "TIME(min)", "SUBJECT_NIDDM", "SUBJECT_normal", 
             "SUBJECT_obese"]
-
-
-X_rf = df_lagged[features]
-y_rf = df_lagged["ISR"]
 
 scaling = ColumnTransformer(transformers=[
     ('scale', MinMaxScaler(), features)
@@ -53,11 +61,13 @@ scaling = ColumnTransformer(transformers=[
 
 def within_subject(selected_features):
     selected_features.remove("sample")
-    X_rfr = X_rf[selected_features]
+    X_train_rf = df_lagged[selected_features]
+    y_train_rf = df_lagged["ISR"]
 
-    X_train_rf, X_test_rf, y_train_rf, y_test_rf = train_test_split(
-        X_rfr, y_rf, test_size=0.2, random_state=42
-    )
+
+    df_test_lagged = create_lag_features(model_test_features)
+    X_test_rf = df_test_lagged[selected_features]
+    y_test_rf = df_test_lagged["ISR"]
 
     return {"X_train": X_train_rf, "X_test": X_test_rf, "y_train": y_train_rf, "y_test": y_test_rf}
 
@@ -80,8 +90,7 @@ def outside_subject():
     return {"X_train": X_train_rf, "X_test": X_test_rf, "y_train": y_train_rf, "y_test": y_test_rf}
 
 
-
-def model_selection():
+def model_results(splitting_style):
     linear_model = LinearRegression()
     xgboost_model = XGBRegressor(n_estimators=200, max_depth=10, learning_rate=0.05, subsample=1.0, colsample_bytree=0.9, reg_alpha=0.8)
     random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.99, max_samples=0.92, random_state=42)
@@ -100,20 +109,13 @@ def model_selection():
             ("model", model_inputs[model_input])
     ])
 
-    return {"selected_model": rf_model, "model_inputs": model_inputs}
+    rf_model.fit(splitting_style["X_train"], splitting_style["y_train"])
+    rf_pred = rf_model.predict(splitting_style["X_test"])
 
 
-
-
-def model_results(splitting_style):
-
-    model_selection()["selected_model"].fit(splitting_style["X_train"], splitting_style["y_train"])
-    rf_pred = model_selection()["selected_model"].predict(splitting_style["X_test"])
-
-
-    print("Ensemble Voting Regressor RMSE:", np.sqrt(mean_squared_error(splitting_style["y_test"], rf_pred)))
-    print(f'Ensemble Voting Regressor R2_Score: {r2_score(splitting_style["y_test"], rf_pred)}')
-    print(f'Ensemble Voting Regressor Mean Absolute Error {mean_absolute_error(splitting_style["y_test"], rf_pred)}')
+    print(F"{str(model_inputs[model_input]).strip("(")} Regressor RMSE:", np.sqrt(mean_squared_error(splitting_style["y_test"], rf_pred)))
+    print(f'{model_inputs[model_input]} Regressor R2_Score: {r2_score(splitting_style["y_test"], rf_pred)}')
+    print(f'{model_inputs[model_input]} Mean Absolute Error {mean_absolute_error(splitting_style["y_test"], rf_pred)}')
 
 
     r, p_value = pearsonr(splitting_style["y_test"], rf_pred)
@@ -124,4 +126,7 @@ def model_results(splitting_style):
 
     return splitting_style["y_test"].max(), splitting_style["y_test"].min()
 
+
+within_sub = within_subject(features)
+outside_subject = outside_subject()
 print(model_results(within_sub))
