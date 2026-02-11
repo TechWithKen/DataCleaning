@@ -42,7 +42,7 @@ model_test_features = pd.concat([model_test, result_test], axis=1)
 model_features
 
 
-def create_lag_features(df, lags=3):
+def create_lag_features(df, lags=2):
     df_lag = df.copy()
     for lag in range(1, lags + 1):
         df_lag[f"CPeptide_lag{lag}"] = df_lag.groupby("sample")["C-Peptide"].shift(lag)
@@ -51,7 +51,7 @@ def create_lag_features(df, lags=3):
 
 df_lagged = create_lag_features(model_features)
 features = ["C-Peptide", "CPeptide_lag1", "CPeptide_lag2", "sample", 
-            "CPeptide_lag3", 'BMI', 'BSA', 'SEX_M', 
+            'BMI', 'BSA', 'SEX_M', 
             "SEX_F", "WEIGHT", "TIME(min)", "SUBJECT_NIDDM", "SUBJECT_normal", 
             "SUBJECT_obese"]
 
@@ -75,7 +75,9 @@ def within_subject(selected_features):
 def outside_subject():
                     
     gss = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
-    Xrfc = X_rf.copy()
+    Xrfc = model_dataset.copy()
+    Xrfc.drop(columns=["ISR"], inplace=True)
+    y_rf = label
     train_idx, test_idx = next(gss.split(Xrfc, y_rf, groups=Xrfc["sample"]))
 
     X_train, X_test = Xrfc.iloc[train_idx], Xrfc.iloc[test_idx]
@@ -83,9 +85,15 @@ def outside_subject():
 
     X_train_rf = X_train.copy()
     X_test_rf = X_test.copy()
-    X_train_rf.drop(columns=["sample"],inplace=True)
+    the_x_train = pd.concat([X_train_rf, y_train_rf], axis=1)
+    the_x_test = pd.concat([X_test_rf, y_test_rf], axis=1)
+    df_lagged = create_lag_features(the_x_train)
+    X_train_rf = df_lagged[features]
+    y_train_rf = df_lagged["ISR"]
 
-    X_test_rf.drop(columns=["sample"],inplace=True)
+    df_test_lagged = create_lag_features(the_x_test)
+    X_test_rf = df_test_lagged[features]
+    y_test_rf = df_test_lagged["ISR"]
 
     return {"X_train": X_train_rf, "X_test": X_test_rf, "y_train": y_train_rf, "y_test": y_test_rf}
 
@@ -102,6 +110,7 @@ def model_results(splitting_style):
     voting_regressor = VotingRegressor(estimators=base_model)
 
     model_inputs = {"1": linear_model, "2": xgboost_model, "3": random_forest, "4": stacked_model, "5": voting_regressor}
+    string_model_inputs = {"1": "Linear Model", "2": "XG BOOST", "3": "Random Forest", "4": "Stacked Model", "5": "Voting Stacked"}
 
     model_input = input('Please select a model [1: linear_model, 2: xgboost_model, 3: random_forest, 4: stacked_model, 5: voting_regressor]: ')
     rf_model = Pipeline(steps=[
@@ -113,9 +122,10 @@ def model_results(splitting_style):
     rf_pred = rf_model.predict(splitting_style["X_test"])
 
 
-    print(F"{str(model_inputs[model_input]).strip("(")} Regressor RMSE:", np.sqrt(mean_squared_error(splitting_style["y_test"], rf_pred)))
-    print(f'{model_inputs[model_input]} Regressor R2_Score: {r2_score(splitting_style["y_test"], rf_pred)}')
-    print(f'{model_inputs[model_input]} Mean Absolute Error {mean_absolute_error(splitting_style["y_test"], rf_pred)}')
+    print(F"{string_model_inputs[model_input]} Regressor RMSE:", np.sqrt(mean_squared_error(splitting_style["y_test"], rf_pred)))
+    print(f'{string_model_inputs[model_input]} Regressor R2_Score: {r2_score(splitting_style["y_test"], rf_pred)}')
+    print(f'{string_model_inputs[model_input]} Mean Absolute Error {mean_absolute_error(splitting_style["y_test"], rf_pred)}')
+    print(f'Residuals: {splitting_style["y_test"].values - rf_pred}')
 
 
     r, p_value = pearsonr(splitting_style["y_test"], rf_pred)
@@ -128,5 +138,5 @@ def model_results(splitting_style):
 
 
 within_sub = within_subject(features)
-outside_subject = outside_subject()
+# outside_subject = outside_subject()
 print(model_results(within_sub))
