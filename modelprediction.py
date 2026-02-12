@@ -27,7 +27,7 @@ model_dataset = full_dataset_cleaned.dropna(subset=["C-Peptide", "ISR"], how="al
 model_dataset = model_dataset.dropna(subset=["ISR"], how="all")
 model_dataset.drop(columns=["Sample ID"], inplace=True)
 model_dataset = pd.get_dummies(model_dataset, columns=["SEX", "SUBJECT"])
-model_dataset = model_dataset[model_dataset["C-Peptide"] > 0] # Remove negative value outliers gotten as a result of a mistake in data collection
+model_dataset = model_dataset[model_dataset["C-Peptide"] > 0]# Remove negative value outliers gotten as a result of a mistake in data collection
 
 
 label = model_dataset["ISR"]
@@ -41,102 +41,125 @@ model_features = pd.concat([model_train, result_train], axis=1)
 model_test_features = pd.concat([model_test, result_test], axis=1)
 model_features
 
+class WithinSubjectDataset:
+    def __init__(self, df1, df2, label_col="ISR", lags=2):
+        self.df = df1.copy()
+        self.df2 = df2.copy()
+        self.label_col = label_col
+        self.lags = lags
 
-def create_lag_features(df, lags=2):
-    df_lag = df.copy()
-    for lag in range(1, lags + 1):
-        df_lag[f"CPeptide_lag{lag}"] = df_lag.groupby("sample")["C-Peptide"].shift(lag)
-    return df_lag.dropna()
+    def create_lag_features(self, df):
+        df_lag = df.copy()
+        for lag in range(1, self.lags + 1):
+            df_lag[f"CPeptide_lag{lag}"] = df_lag.groupby("sample")["C-Peptide"].shift(lag)
+        return df_lag.dropna()
 
-
-df_lagged = create_lag_features(model_features)
-features = ["C-Peptide", "CPeptide_lag1", "CPeptide_lag2", "sample", 
-            'BMI', 'BSA', 'SEX_M', 
-            "SEX_F", "WEIGHT", "TIME(min)", "SUBJECT_NIDDM", "SUBJECT_normal", 
-            "SUBJECT_obese"]
-
-scaling = ColumnTransformer(transformers=[
-    ('scale', MinMaxScaler(), features)
-])
-
-def within_subject(selected_features):
-    selected_features.remove("sample")
-    X_train_rf = df_lagged[selected_features]
-    y_train_rf = df_lagged["ISR"]
-
-
-    df_test_lagged = create_lag_features(model_test_features)
-    X_test_rf = df_test_lagged[selected_features]
-    y_test_rf = df_test_lagged["ISR"]
-
-    return {"X_train": X_train_rf, "X_test": X_test_rf, "y_train": y_train_rf, "y_test": y_test_rf}
+    def prepare(self):
+        df_train_lagged = self.create_lag_features(self.df)
+        df_test_lagged = self.create_lag_features(self.df2)
+        features = df_train_lagged.select_dtypes(include=["int64", "float64"]).columns.tolist()
+        features.remove("ISR")
+        
+        return {
+            "X_train": df_train_lagged[features],
+            "X_test": df_test_lagged[features],
+            "y_train": df_train_lagged[self.label_col],
+            "y_test": df_test_lagged[self.label_col],
+        }
 
 
-def outside_subject():
-                    
-    gss = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
-    Xrfc = model_dataset.copy()
-    Xrfc.drop(columns=["ISR"], inplace=True)
-    y_rf = label
-    train_idx, test_idx = next(gss.split(Xrfc, y_rf, groups=Xrfc["sample"]))
+class OutsideSubjectDataset:
+    def __init__(self, df, label_col="ISR", lags=0):
+        self.df = df.copy()
+        self.label_col = label_col
+        self.lags = lags
 
-    X_train, X_test = Xrfc.iloc[train_idx], Xrfc.iloc[test_idx]
-    y_train_rf, y_test_rf = y_rf.iloc[train_idx], y_rf.iloc[test_idx]
+    def prepare(self):
+        from sklearn.model_selection import GroupShuffleSplit
 
-    X_train_rf = X_train.copy()
-    X_test_rf = X_test.copy()
-    the_x_train = pd.concat([X_train_rf, y_train_rf], axis=1)
-    the_x_test = pd.concat([X_test_rf, y_test_rf], axis=1)
-    df_lagged = create_lag_features(the_x_train)
-    X_train_rf = df_lagged[features]
-    y_train_rf = df_lagged["ISR"]
+        # Create baseline per subject
+       
+        y = np.log1p(self.df[self.label_col])
+        X = self.df.drop(columns=[self.label_col])
 
-    df_test_lagged = create_lag_features(the_x_test)
-    X_test_rf = df_test_lagged[features]
-    y_test_rf = df_test_lagged["ISR"]
+        gss = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
+        train_idx, test_idx = next(gss.split(X, y, groups=X["sample"]))
 
-    return {"X_train": X_train_rf, "X_test": X_test_rf, "y_train": y_train_rf, "y_test": y_test_rf}
+        X_train, X_test = X.iloc[train_idx].reset_index(drop=True), X.iloc[test_idx].reset_index(drop=True)
+        y_train, y_test = y.iloc[train_idx].reset_index(drop=True), y.iloc[test_idx].reset_index(drop=True)
 
+        # Concatenate for lag creation
+        train_df = pd.concat([X_train, y_train], axis=1)
+        test_df = pd.concat([X_test, y_test], axis=1)
 
-def model_results(splitting_style):
-    linear_model = LinearRegression()
-    xgboost_model = XGBRegressor(n_estimators=200, max_depth=10, learning_rate=0.05, subsample=1.0, colsample_bytree=0.9, reg_alpha=0.8)
-    random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.99, max_samples=0.92, random_state=42)
+        df_train_lagged = train_df
+        df_test_lagged = test_df
+        features = df_train_lagged.select_dtypes(include=["int64", "float64"]).columns.tolist()
+        to_remove = ["ISR", "AGE", "HEIGHT"]
 
+        features = [x for x in features if x not in to_remove]
+        print(features)
 
-    base_model = [("xgboost", xgboost_model),('randomforest', random_forest)]
-    meta_model = LinearRegression()
-    stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
-    voting_regressor = VotingRegressor(estimators=base_model)
-
-    model_inputs = {"1": linear_model, "2": xgboost_model, "3": random_forest, "4": stacked_model, "5": voting_regressor}
-    string_model_inputs = {"1": "Linear Model", "2": "XG BOOST", "3": "Random Forest", "4": "Stacked Model", "5": "Voting Stacked"}
-
-    model_input = input('Please select a model [1: linear_model, 2: xgboost_model, 3: random_forest, 4: stacked_model, 5: voting_regressor]: ')
-    rf_model = Pipeline(steps=[
-            ("scale", scaling),
-            ("model", model_inputs[model_input])
-    ])
-
-    rf_model.fit(splitting_style["X_train"], splitting_style["y_train"])
-    rf_pred = rf_model.predict(splitting_style["X_test"])
+        return {
+            "X_train": df_train_lagged[features],
+            "X_test": df_test_lagged[features],
+            "y_train": df_train_lagged[self.label_col],
+            "y_test": df_test_lagged[self.label_col],
+        }
 
 
-    print(F"{string_model_inputs[model_input]} Regressor RMSE:", np.sqrt(mean_squared_error(splitting_style["y_test"], rf_pred)))
-    print(f'{string_model_inputs[model_input]} Regressor R2_Score: {r2_score(splitting_style["y_test"], rf_pred)}')
-    print(f'{string_model_inputs[model_input]} Mean Absolute Error {mean_absolute_error(splitting_style["y_test"], rf_pred)}')
-    print(f'Residuals: {splitting_style["y_test"].values - rf_pred}')
+class RegressorEvaluator:
+    def __init__(self, X_train, X_test, y_train, y_test):
+        self.X_train = X_train
+        self.X_test = X_test
+        self.y_train = y_train
+        self.y_test = y_test
+
+    def evaluate(self, model, scale_numeric=True):
+        if scale_numeric:
+            numeric_features = self.X_train.select_dtypes(include=["int64", "float64"]).columns.tolist()
+            scaler = ColumnTransformer([('num', MinMaxScaler(), numeric_features)])
+            pipeline = Pipeline([
+                ("scale", scaler),
+                ("model", model)
+            ])
+        else:
+            pipeline = model
+
+        pipeline.fit(self.X_train, self.y_train)
+        y_pred = np.expm1(pipeline.predict(self.X_test))
+        y_true = np.expm1(self.y_test)
+
+        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+        r2 = r2_score(y_true, y_pred)
+        mae = mean_absolute_error(y_true, y_pred)
+        r, p = pearsonr(y_true, y_pred)
+
+        print(f"Model: {model.__class__.__name__}")
+        print(f"RMSE: {rmse:.3f}")
+        print(f"R²: {r2:.3f}")
+        print(f"MAE: {mae:.3f}")
+        print(f"Pearson r: {r:.3f}, p-value: {p:.2e}")
+
+        return {"rmse": rmse, "r2": r2, "mae": mae, "pearson_r": r, "p_value": p}
 
 
-    r, p_value = pearsonr(splitting_style["y_test"], rf_pred)
 
-    print("Pearson correlation:", r)
-    print("p-value:", p_value)
-
-
-    return splitting_style["y_test"].max(), splitting_style["y_test"].min()
+# Prepare datasets
+within_subjects = WithinSubjectDataset(model_features, model_test_features).prepare()
+cross_subjects = OutsideSubjectDataset(model_dataset).prepare()
 
 
-within_sub = within_subject(features)
-# outside_subject = outside_subject()
-print(model_results(within_sub))
+linear_model = LinearRegression()
+xgboost_model = XGBRegressor(n_estimators=200, max_depth=10, learning_rate=0.05, subsample=1.0, colsample_bytree=0.9, reg_alpha=0.8)
+random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.99, max_samples=0.92, random_state=42)
+
+base_model = [("xgboost", xgboost_model),('randomforest', random_forest)]
+
+meta_model = LinearRegression()
+
+stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
+voting_regressor = VotingRegressor(estimators=base_model)
+
+evaluator = RegressorEvaluator(**cross_subjects)
+metrics = evaluator.evaluate(random_forest)
