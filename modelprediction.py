@@ -42,7 +42,7 @@ model_test_features = pd.concat([model_test, result_test], axis=1)
 model_features
 
 class WithinSubjectDataset:
-    def __init__(self, df1, df2, label_col="ISR", lags=2):
+    def __init__(self, df1, df2, label_col="ISR", lags=3):
         self.df = df1.copy()
         self.df2 = df2.copy()
         self.label_col = label_col
@@ -63,8 +63,8 @@ class WithinSubjectDataset:
         return {
             "X_train": df_train_lagged[features],
             "X_test": df_test_lagged[features],
-            "y_train": df_train_lagged[self.label_col],
-            "y_test": df_test_lagged[self.label_col],
+            "y_train": np.log1p(df_train_lagged[self.label_col]),
+            "y_test": np.log1p(df_test_lagged[self.label_col]),
         }
 
 
@@ -98,7 +98,6 @@ class OutsideSubjectDataset:
         to_remove = ["ISR", "AGE", "HEIGHT"]
 
         features = [x for x in features if x not in to_remove]
-        print(features)
 
         return {
             "X_train": df_train_lagged[features],
@@ -141,6 +140,7 @@ class RegressorEvaluator:
         print(f"MAE: {mae:.3f}")
         print(f"Pearson r: {r:.3f}, p-value: {p:.2e}")
 
+
         return {"rmse": rmse, "r2": r2, "mae": mae, "pearson_r": r, "p_value": p}
 
 
@@ -161,5 +161,5 @@ meta_model = LinearRegression()
 stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
 voting_regressor = VotingRegressor(estimators=base_model)
 
-evaluator = RegressorEvaluator(**cross_subjects)
-metrics = evaluator.evaluate(random_forest)
+evaluator = RegressorEvaluator(**within_subjects)
+metrics = evaluator.evaluate(xgboost_model)
