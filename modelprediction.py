@@ -1,15 +1,17 @@
 import pandas as pd
 import numpy as np
+import shap
+import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestRegressor, StackingRegressor, VotingRegressor
 from xgboost import XGBRegressor
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from scipy.stats import pearsonr
+
 
 
 full_dataset = pd.read_excel("./fulldataset.xlsx", index_col=False)
@@ -27,7 +29,7 @@ model_dataset = full_dataset_cleaned.dropna(subset=["C-Peptide", "ISR"], how="al
 model_dataset = model_dataset.dropna(subset=["ISR"], how="all")
 model_dataset.drop(columns=["Sample ID"], inplace=True)
 model_dataset = pd.get_dummies(model_dataset, columns=["SEX", "SUBJECT"])
-model_dataset = model_dataset[model_dataset["C-Peptide"] > 0]# Remove negative value outliers gotten as a result of a mistake in data collection
+model_dataset = model_dataset[model_dataset["C-Peptide"] > 0]
 
 
 label = model_dataset["ISR"]
@@ -57,8 +59,9 @@ class WithinSubjectDataset:
     def prepare(self):
         df_train_lagged = self.create_lag_features(self.df)
         df_test_lagged = self.create_lag_features(self.df2)
-        features = df_train_lagged.select_dtypes(include=["int64", "float64"]).columns.tolist()
-        features.remove("ISR")
+        features = df_train_lagged.select_dtypes(include=["int64", "float64", "bool"]).columns.tolist()
+        to_remove = ["ISR", "AGE", "HEIGHT", "WEIGHT"]
+        features = [x for x in features if x not in to_remove]
         
         return {
             "X_train": df_train_lagged[features],
@@ -75,9 +78,6 @@ class OutsideSubjectDataset:
         self.lags = lags
 
     def prepare(self):
-        from sklearn.model_selection import GroupShuffleSplit
-
-        # Create baseline per subject
        
         y = np.log1p(self.df[self.label_col])
         X = self.df.drop(columns=[self.label_col])
@@ -94,7 +94,7 @@ class OutsideSubjectDataset:
 
         df_train_lagged = train_df
         df_test_lagged = test_df
-        features = df_train_lagged.select_dtypes(include=["int64", "float64"]).columns.tolist()
+        features = df_train_lagged.select_dtypes(include=["int64", "float64", "bool"]).columns.tolist()
         to_remove = ["ISR", "AGE", "HEIGHT"]
 
         features = [x for x in features if x not in to_remove]
@@ -116,7 +116,7 @@ class RegressorEvaluator:
 
     def evaluate(self, model, scale_numeric=True):
         if scale_numeric:
-            numeric_features = self.X_train.select_dtypes(include=["int64", "float64"]).columns.tolist()
+            numeric_features = self.X_train.select_dtypes(include=["int64", "float64", "bool"]).columns.tolist()
             scaler = ColumnTransformer([('num', MinMaxScaler(), numeric_features)])
             pipeline = Pipeline([
                 ("scale", scaler),
@@ -133,6 +133,27 @@ class RegressorEvaluator:
         r2 = r2_score(y_true, y_pred)
         mae = mean_absolute_error(y_true, y_pred)
         r, p = pearsonr(y_true, y_pred)
+
+        # order = np.argsort(y_pred)
+        # y_true_sorted = y_true[order]
+        # y_pred_sorted = y_pred[order]
+
+        # bin_size = len(y_true)
+        # true_means = []
+        # pred_means = []
+
+        # for i in range(10):
+        #     start = i * bin_size
+        #     end = (i + 1) * bin_size
+        #     true_means.append(np.mean(y_true_sorted[start:end]))
+        #     pred_means.append(np.mean(y_pred_sorted[start:end]))
+
+        # plt.plot(pred_means, true_means, marker='o')
+        # plt.plot(pred_means, pred_means, linestyle='--')  # ideal line
+        # plt.xlabel("Predicted")
+        # plt.ylabel("Observed")
+        # plt.title("Calibration Plot")
+        # plt.show()
 
         print(f"Model: {model.__class__.__name__}")
         print(f"RMSE: {rmse:.3f}")
@@ -151,8 +172,8 @@ cross_subjects = OutsideSubjectDataset(model_dataset).prepare()
 
 
 linear_model = LinearRegression()
-xgboost_model = XGBRegressor(n_estimators=200, max_depth=10, learning_rate=0.05, subsample=1.0, colsample_bytree=0.9, reg_alpha=0.8)
-random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.99, max_samples=0.92, random_state=42)
+xgboost_model = XGBRegressor(n_estimators=300, max_depth=3, learning_rate=0.1, subsample=0.9, colsample_bytree=1.0, reg_alpha=0.8)
+random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.7, max_samples=0.7, random_state=42)
 
 base_model = [("xgboost", xgboost_model),('randomforest', random_forest)]
 
@@ -161,5 +182,11 @@ meta_model = LinearRegression()
 stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
 voting_regressor = VotingRegressor(estimators=base_model)
 
-evaluator = RegressorEvaluator(**within_subjects)
+evaluator = RegressorEvaluator(**cross_subjects)
 metrics = evaluator.evaluate(xgboost_model)
+
+explainer = shap.TreeExplainer(xgboost_model)
+shap_values = explainer.shap_values(cross_subjects["X_test"])
+
+shap.summary_plot(shap_values, cross_subjects["X_test"])
+
