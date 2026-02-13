@@ -72,13 +72,12 @@ class WithinSubjectDataset:
 
 
 class OutsideSubjectDataset:
-    def __init__(self, df, label_col="ISR", lags=0):
+    def __init__(self, df, label_col="ISR"):
         self.df = df.copy()
         self.label_col = label_col
-        self.lags = lags
 
     def prepare(self):
-       
+
         y = np.log1p(self.df[self.label_col])
         X = self.df.drop(columns=[self.label_col])
 
@@ -95,7 +94,7 @@ class OutsideSubjectDataset:
         df_train_lagged = train_df
         df_test_lagged = test_df
         features = df_train_lagged.select_dtypes(include=["int64", "float64", "bool"]).columns.tolist()
-        to_remove = ["ISR", "AGE", "HEIGHT"]
+        to_remove = ["ISR", "AGE", "HEIGHT", "WEIGHT"]
 
         features = [x for x in features if x not in to_remove]
 
@@ -134,8 +133,6 @@ class RegressorEvaluator:
         mae = mean_absolute_error(y_true, y_pred)
         r, p = pearsonr(y_true, y_pred)
 
-        plt.scatter(y_true, y_pred)
-
         print(f"Model: {model.__class__.__name__}")
         print(f"RMSE: {rmse:.3f}")
         print(f"R²: {r2:.3f}")
@@ -155,21 +152,21 @@ cross_subjects = OutsideSubjectDataset(model_dataset).prepare()
 
 
 linear_model = LinearRegression()
-xgboost_model = XGBRegressor(n_estimators=300, max_depth=3, learning_rate=0.1, subsample=0.9, colsample_bytree=1.0, reg_alpha=0.8)
-random_forest = RandomForestRegressor(n_estimators=200, max_depth=10, max_features=0.7, max_samples=0.7, random_state=42)
+xgboost_model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.2, subsample=1.0, colsample_bytree=1.0, reg_alpha=0.8)
+random_forest = RandomForestRegressor(n_estimators=300, max_depth=None, max_features=0.7, random_state=42, min_samples_split=5)
 
 base_model = [("xgboost", xgboost_model),('randomforest', random_forest)]
 
 meta_model = LinearRegression()
 
-stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_model, passthrough=False)
 voting_regressor = VotingRegressor(estimators=base_model)
 
-evaluator = RegressorEvaluator(**cross_subjects)
-metrics = evaluator.evaluate(random_forest)
+evaluator = RegressorEvaluator(**within_subjects)
+metrics = evaluator.evaluate(voting_regressor)
 
-explainer = shap.TreeExplainer(random_forest)
-shap_values = explainer.shap_values(cross_subjects["X_test"])
 
-shap.summary_plot(shap_values, cross_subjects["X_test"])
+explainer = shap.TreeExplainer(xgboost_model)
+shap_values = explainer.shap_values(within_subjects["X_test"])
+
+shap.summary_plot(shap_values, within_subjects["X_test"])
 
