@@ -10,7 +10,7 @@ from sklearn.ensemble import RandomForestRegressor, StackingRegressor, VotingReg
 from xgboost import XGBRegressor
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 
 
 
@@ -134,32 +134,15 @@ class RegressorEvaluator:
         mae = mean_absolute_error(y_true, y_pred)
         r, p = pearsonr(y_true, y_pred)
 
-        # order = np.argsort(y_pred)
-        # y_true_sorted = y_true[order]
-        # y_pred_sorted = y_pred[order]
-
-        # bin_size = len(y_true)
-        # true_means = []
-        # pred_means = []
-
-        # for i in range(10):
-        #     start = i * bin_size
-        #     end = (i + 1) * bin_size
-        #     true_means.append(np.mean(y_true_sorted[start:end]))
-        #     pred_means.append(np.mean(y_pred_sorted[start:end]))
-
-        # plt.plot(pred_means, true_means, marker='o')
-        # plt.plot(pred_means, pred_means, linestyle='--')  # ideal line
-        # plt.xlabel("Predicted")
-        # plt.ylabel("Observed")
-        # plt.title("Calibration Plot")
-        # plt.show()
+        plt.scatter(y_true, y_pred)
 
         print(f"Model: {model.__class__.__name__}")
         print(f"RMSE: {rmse:.3f}")
         print(f"R²: {r2:.3f}")
         print(f"MAE: {mae:.3f}")
         print(f"Pearson r: {r:.3f}, p-value: {p:.2e}")
+        rho, p = spearmanr(y_true, y_pred)
+        print(f'Spearman = {rho, p}')
 
 
         return {"rmse": rmse, "r2": r2, "mae": mae, "pearson_r": r, "p_value": p}
@@ -183,9 +166,9 @@ stacked_model = StackingRegressor(estimators=base_model, final_estimator=meta_mo
 voting_regressor = VotingRegressor(estimators=base_model)
 
 evaluator = RegressorEvaluator(**cross_subjects)
-metrics = evaluator.evaluate(xgboost_model)
+metrics = evaluator.evaluate(random_forest)
 
-explainer = shap.TreeExplainer(xgboost_model)
+explainer = shap.TreeExplainer(random_forest)
 shap_values = explainer.shap_values(cross_subjects["X_test"])
 
 shap.summary_plot(shap_values, cross_subjects["X_test"])
